@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QAction, QColor, QImage, QPalette, QPixmap
+from PySide6.QtGui import QAction, QColor, QIntValidator, QImage, QPalette, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox,
     QDialog,
@@ -15,7 +15,6 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMainWindow,
     QMessageBox,
-    QSpinBox,
     QToolBar,
     QVBoxLayout,
     QWidget,
@@ -31,38 +30,67 @@ from .stream import StreamWorker
 class ConnectionDialog(QDialog):
     def __init__(self, config: DeviceConfig | None, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Recorder connection")
-        self.setMinimumWidth(430)
-        self.host = QLineEdit(config.host if config else "192.168.1.100")
-        self.username = QLineEdit(config.username if config else "admin")
+        self.setWindowTitle("View-only recorder connection")
+        self.setMinimumWidth(500)
+        saved_host = config.host if config else "192.168.1.102"
+        saved_username = config.username if config else "vision_viewer"
+        self.host = QLineEdit(saved_host)
+        self.username = QLineEdit(saved_username)
         self.password = QLineEdit()
         self.password.setEchoMode(QLineEdit.EchoMode.Password)
         if config:
-            self.password.setText(load_password(config.host, config.username) or "")
-        self.api_port = _port_input(config.api_port if config else 80)
-        self.rtsp_port = _port_input(config.rtsp_port if config else 1554)
+            self.password.setText(load_password(saved_host, saved_username) or "")
+        self.api_port = _port_input(80)
+        self.rtsp_port = _port_input(1554)
         self.https = QCheckBox("Use HTTPS for ISAPI")
-        self.https.setChecked(config.use_https if config else False)
+        self.https.setChecked(False)
+        self.https.setEnabled(False)
         self.verify_tls = QCheckBox("Verify recorder TLS certificate")
-        self.verify_tls.setChecked(config.verify_tls if config else False)
+        self.verify_tls.setChecked(False)
+        self.verify_tls.setEnabled(False)
         self.substream = QCheckBox("Use sub-stream (recommended for camera grid)")
         self.substream.setChecked(config.prefer_substream if config else True)
 
+        self.setStyleSheet(
+            "QLineEdit { background-color: #000000; color: #ffffff; border: 1px solid #56616d; "
+            "border-radius: 2px; padding: 6px 8px; selection-background-color: #218c74; }"
+            "QLineEdit:focus { border: 1px solid #45b99b; }"
+            "QLineEdit:read-only { color: #d7dde3; background-color: #000000; }"
+            "QPushButton { background-color: #ffffff; color: #000000; border: 1px solid #9aa5b1; "
+            "border-radius: 2px; padding: 6px 14px; min-width: 90px; }"
+            "QPushButton:hover { background-color: #e6eaed; }"
+            "QPushButton:pressed { background-color: #cfd5da; }"
+            "QPushButton:disabled { color: #555555; background-color: #c4c8cb; }"
+        )
+
+        title = QLabel("Live camera viewing")
+        title.setStyleSheet("font-size: 18px; font-weight: 600; color: #edf1f5;")
+        subtitle = QLabel("Connect through Tailscale using a DVR account with live-view-only permissions.")
+        subtitle.setWordWrap(True)
+        subtitle.setStyleSheet("color: #aeb9c5; margin-bottom: 6px;")
+        mode = QLabel("VIEW ONLY  |  No recorder configuration or PTZ commands")
+        mode.setStyleSheet("color: #62d6b3; font-weight: 600; padding: 7px 0;")
+
         form = QFormLayout()
-        form.addRow("Recorder IP / Tailscale name", self.host)
-        form.addRow("Username", self.username)
+        form.setVerticalSpacing(10)
+        form.addRow("DVR / Tailscale IP", self.host)
+        form.addRow("View-only username", self.username)
         form.addRow("Password", self.password)
         form.addRow("ISAPI port", self.api_port)
         form.addRow("RTSP port", self.rtsp_port)
-        form.addRow("", self.https)
-        form.addRow("", self.verify_tls)
         form.addRow("", self.substream)
-        note = QLabel("Use a read-only DVR account over LAN or Tailscale. No port forwarding is required.")
+        note = QLabel("Ports and HTTPS are fixed for this recorder. Tailscale must remain connected; no port forwarding is required.")
         note.setWordWrap(True)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel | QDialogButtonBox.StandardButton.Ok)
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Connect to cameras")
         buttons.accepted.connect(self._accept_if_valid)
         buttons.rejected.connect(self.reject)
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(14, 14, 14, 14)
+        layout.setSpacing(6)
+        layout.addWidget(title)
+        layout.addWidget(subtitle)
+        layout.addWidget(mode)
         layout.addLayout(form)
         layout.addWidget(note)
         layout.addWidget(buttons)
@@ -71,6 +99,9 @@ class ConnectionDialog(QDialog):
         if not self.host.text().strip() or not self.username.text().strip() or not self.password.text():
             QMessageBox.warning(self, "Missing details", "Host, username, and password are required.")
             return
+        if not self.api_port.text().isdigit() or not self.rtsp_port.text().isdigit():
+            QMessageBox.warning(self, "Invalid port", "Ports must be valid numbers.")
+            return
         self.accept()
 
     def values(self) -> tuple[DeviceConfig, str]:
@@ -78,8 +109,8 @@ class ConnectionDialog(QDialog):
             DeviceConfig(
                 host=self.host.text().strip(),
                 username=self.username.text().strip(),
-                api_port=self.api_port.value(),
-                rtsp_port=self.rtsp_port.value(),
+                api_port=int(self.api_port.text()),
+                rtsp_port=int(self.rtsp_port.text()),
                 use_https=self.https.isChecked(),
                 verify_tls=self.verify_tls.isChecked(),
                 prefer_substream=self.substream.isChecked(),
@@ -122,6 +153,8 @@ class CameraTile(QWidget):
 
     def stop(self) -> None:
         self.worker.stop()
+
+    def wait_for_stop(self) -> None:
         self.worker.wait(3000)
 
 
@@ -188,6 +221,9 @@ class MainWindow(QMainWindow):
     def disconnect_all(self) -> None:
         for tile in self._tiles:
             tile.stop()
+        for tile in self._tiles:
+            tile.wait_for_stop()
+        for tile in self._tiles:
             self._grid.removeWidget(tile)
             tile.deleteLater()
         self._tiles.clear()
@@ -203,10 +239,10 @@ class MainWindow(QMainWindow):
         event.accept()
 
 
-def _port_input(value: int) -> QSpinBox:
-    field = QSpinBox()
-    field.setRange(1, 65535)
-    field.setValue(value)
+def _port_input(value: int) -> QLineEdit:
+    field = QLineEdit(str(value))
+    field.setValidator(QIntValidator(1, 65535, field))
+    field.setReadOnly(True)
     return field
 
 
